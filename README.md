@@ -81,6 +81,9 @@ pip install pyannote.audio torchaudio matplotlib streamz ipywidgets
 python realtime_file_visualizer.py
 ```
 
+![Streaming VAD Demo](assets/realtime_file_visualizer.png)
+
+
 ---
 
 
@@ -95,6 +98,9 @@ python realtime_file_visualizer.py
 
 > ⚠️ This script is designed to be run in **Google Colab**, not locally.  
 > Make sure your browser **allows microphone access** when prompted.
+
+
+![Live VAD Demo](assets/mic_live_chunk_detector.png)
 
 ---
 
@@ -113,6 +119,8 @@ apt-get install libportaudio2
 from huggingface_hub import notebook_login
 notebook_login()
 ```
+
+
 
 ---
 
