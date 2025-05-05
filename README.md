@@ -55,6 +55,9 @@ git clone https://github.com/pyannote/AMI-diarization-setup.git
 python offline_online_evaluation.py
 ```
 
+![Offline vs Online VAD Demo](assets/offline_online_evaluation.png)
+
+
 ---
 
 ## 2. Real-Time File-Based Visualization
