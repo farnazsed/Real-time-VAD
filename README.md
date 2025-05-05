@@ -32,7 +32,8 @@ import torch
 pipeline.to(torch.device("cuda"))
 ```
 
-## 🧪 1. Offline & Online Evaluation (AMI Dataset)
+## 1. Offline & Online Evaluation (AMI Dataset)
+
 
 - Evaluates VAD on pre-annotated audio files from the AMI corpus.
 - Compares:
@@ -41,8 +42,89 @@ pipeline.to(torch.device("cuda"))
 - Plots:
   - Ground truth vs. predictions
   - Frame-level speech probabilities
-- Outputs metrics like DER, F1, precision, recall, and MACs/frame.
+- Outputs metrics like DER, F1, precision, recall, and RTF.
+
+### Setup Instructions
+
+1. Clone the AMI evaluation protocol:
 
 ```bash
-python 1_offline_online_evaluation.py
+git clone https://github.com/pyannote/AMI-diarization-setup.git
+
+```bash
+python offline_online_evaluation.py
 ```
+
+---
+
+## 2. Real-Time File-Based Visualization
+
+- Processes local audio files in real time (e.g., `.wav`) in streaming chunks
+- Uses `streamz` for live signal flow and `matplotlib` for dynamic visualization
+- Displays:
+  - Audio waveform (amplitude over time)
+  - Frame-level speech probability (VAD scores)
+  - Highlighted regions for detected speech
+- Requires: `ipywidgets`, `streamz`, `matplotlib`, `pyannote.audio`, `torchaudio`
+
+### 🛠 Dependencies
+
+Install required libraries:
+
+```bash
+pip install pyannote.audio torchaudio matplotlib streamz ipywidgets
+
+```bash
+python realtime_file_visualizer.py
+```
+
+---
+
+
+## 3. Live Microphone Chunk-Level Detection
+
+- Captures audio from the browser’s microphone (via JavaScript bridge in Google Colab)
+- Performs real-time chunk-level voice activity detection (32ms resolution)
+- Displays:
+  - Live speech status ("SPEECH DETECTED" / "SILENCE")
+  - Aggregated speech segments on waveform
+  - Speech vs. silence bar chart
+
+> ⚠️ This script is designed to be run in **Google Colab**, not locally.  
+> Make sure your browser **allows microphone access** when prompted.
+
+---
+
+## Setup
+
+1. Install dependencies:
+
+```bash
+pip install pyannote.audio torchaudio streamz matplotlib ipywidgets
+apt-get install libportaudio2
+```
+
+2. Authenticate with Hugging Face:
+
+```python
+from huggingface_hub import notebook_login
+notebook_login()
+```
+
+---
+
+##  Hugging Face VAD Model
+
+All scripts use the pretrained model:  
+[`pyannote/voice-activity-detection`](https://huggingface.co/pyannote/voice-activity-detection)
+
+---
+
+## Example Output
+
+- DER, F1, and frame-level accuracy plots (for AMI files)
+- Real-time waveform + VAD probability visualization
+- Microphone-driven segment detection with speech/silence durations
+
+---
+
