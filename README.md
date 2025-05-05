@@ -24,7 +24,7 @@ This repository contains three Python-based implementations for performing Voice
 ```python
 from pyannote.audio import Pipeline
 pipeline = Pipeline.from_pretrained(
-    "pyannote/speaker-diarization-3.1",
+    "pyannote/segmentation-3.0",
     use_auth_token="HUGGINGFACE_ACCESS_TOKEN_GOES_HERE")
 
 # send pipeline to GPU (when available)
@@ -32,4 +32,17 @@ import torch
 pipeline.to(torch.device("cuda"))
 ```
 
+## 🧪 1. Offline & Online Evaluation (AMI Dataset)
 
+- Evaluates VAD on pre-annotated audio files from the AMI corpus.
+- Compares:
+  - Offline mode (full waveform inference)
+  - Online mode (chunked inference with hangover)
+- Plots:
+  - Ground truth vs. predictions
+  - Frame-level speech probabilities
+- Outputs metrics like DER, F1, precision, recall, and MACs/frame.
+
+```bash
+python 1_offline_online_evaluation.py
+```
