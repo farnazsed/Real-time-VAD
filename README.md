@@ -14,3 +14,22 @@ This repository contains three Python-based implementations for performing Voice
 | `3_mic_live_chunk_detector.py` | Live microphone-based VAD with JavaScript interface and chunk-level decisions |
 
 ---
+
+## TL;DR
+
+1. Install [`pyannote.audio`](https://github.com/pyannote/pyannote-audio) with `pip install pyannote.audio`
+2. Accept [`pyannote/segmentation-3.0`](https://hf.co/pyannote/segmentation-3.0) user conditions
+3. Create access token at [`hf.co/settings/tokens`](https://hf.co/settings/tokens).
+
+```python
+from pyannote.audio import Pipeline
+pipeline = Pipeline.from_pretrained(
+    "pyannote/speaker-diarization-3.1",
+    use_auth_token="HUGGINGFACE_ACCESS_TOKEN_GOES_HERE")
+
+# send pipeline to GPU (when available)
+import torch
+pipeline.to(torch.device("cuda"))
+```
+
+
