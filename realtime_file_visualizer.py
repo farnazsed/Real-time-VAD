@@ -27,53 +27,51 @@ from streamz import Stream
 from typing import Tuple, List
 from ipywidgets import widgets, Layout
 import io
+from matplotlib.collections import PolyCollection
 
-# %matplotlib inline
-plt.rcParams["figure.figsize"] = (14, 6)
+# Set up plotting
+%matplotlib inline
+plt.rcParams["figure.figsize"] = (14, 8)
 plt.rcParams["figure.facecolor"] = 'white'
 
 class LiveVADVisualizer:
-    def __init__(self, window_size=2.0, hop_size=0.2, latency=0.5, history_size=10):
-
+    def __init__(self, window_size=0.5, hop_size=0.05, latency=0.2, history_size=5):
         self.sample_rate = 16000
         self.window_size = window_size
         self.hop_size = hop_size
         self.latency = latency
         self.history_size = history_size
 
+        # Initialize data buffers
+        self.waveform_buffer = np.array([])
+        self.vad_buffer = np.array([])
+        self.time_buffer = np.array([])
+        self.speech_segments = []
 
+        # For storing complete recording
+        self.full_waveform = np.array([])
+        self.full_vad = np.array([])
+        self.full_time = np.array([])
+
+        # Original audio track
+        self.original_waveform = None
+        self.original_sample_rate = None
+        self.original_time = None
+
+        # Initialize VAD pipeline
         self.pipeline = Pipeline.from_pretrained(
             "pyannote/voice-activity-detection",
             use_auth_token=True
         ).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
         self.pipeline.instantiate({
-            'onset': 0.6,
-            'offset': 0.4,
-            'min_duration_on': 0.05,
-            'min_duration_off': 0.05
+            'onset': 0.5,  # More sensitive threshold
+            'offset': 0.3,
+            'min_duration_on': 0.1,
+            'min_duration_off': 0.1
         })
 
-        self.fig, (self.ax_wave, self.ax_vad) = plt.subplots(2, 1, sharex=True)
-        self.fig.tight_layout(pad=3.0)
-        self.ax_wave.set_title("Live Audio Waveform")
-        self.ax_vad.set_title("Voice Activity Detection")
-        self.ax_vad.set_xlabel("Time (seconds)")
-        self.ax_wave.set_ylabel("Amplitude")
-        self.ax_vad.set_ylabel("Speech Probability")
-        self.ax_vad.set_ylim(-0.1, 1.1)
-
-        # Data buffers for real-time display
-        self.waveform_buffer = np.array([])
-        self.vad_buffer = np.array([])
-        self.time_buffer = np.array([])
-        self.speech_segments = []
-        self.waveform = np.array([])
-
-        self.full_waveform = np.array([])
-        self.full_vad = np.array([])
-        self.full_time = np.array([])
-
+        # Status widget
         self.status_text = widgets.HTML(
             value="<h3>Status: Waiting for audio...</h3>",
             layout=Layout(width='100%', height='60px')
@@ -90,7 +88,7 @@ class LiveVADVisualizer:
         (self.source
             .map(self.process_chunk)
             .accumulate(self.Aggregator(latency=self.latency),
-                          returns_state=True, start=None)
+                      returns_state=True, start=None)
             .sink(self.update_display)
         )
 
@@ -105,7 +103,6 @@ class LiveVADVisualizer:
                 "sample_rate": self.sample_rate
             })
 
-
         speech_prob = np.zeros((len(chunk), 1))
         for segment in vad_out.get_timeline().support():
             start_idx = int(segment.start * self.sample_rate)
@@ -115,57 +112,38 @@ class LiveVADVisualizer:
         return SWF(speech_prob, chunk.sliding_window)
 
     class Aggregator:
-
         def __init__(self, latency=0.5):
             self.latency = latency
 
         def __call__(self, internal_state, current_vad: SWF) -> Tuple[Tuple[float, List[SWF]], SWF]:
-
             if internal_state is None:
                 internal_state = (0.0, [])
 
-            # previous call led to the emission of aggregated scores up to time `delayed_time`
-            # `past_buffers` is a rolling list of past buffers that we are going to aggregate
             delayed_time, past_buffers = internal_state
-
-            # real time is the current end time of the audio buffer
-            # (here, estimated from the end time of the VAD buffer)
             real_time = current_vad.extent.end
-
-            # because we are only allowed `self.latency` seconds of latency, this call should
-            # return aggregated scores for [delayed_time, real_time - latency] time range.
             required = Segment(delayed_time, real_time - self.latency)
 
-            # to compute more robust scores, we will combine all buffers that have a non-empty
-            # temporal intersection with required time range. we can get rid of the others as they
-            # will no longer be needed as they are too far away in the past.
             past_buffers = [buf for buf in past_buffers if buf.extent.end > required.start] + [current_vad]
 
-
-            # we aggregate all past buffers (but only on the 'required' region of interest)
             intersection = np.stack([buf.crop(required, fixed=required.duration) for buf in past_buffers])
             aggregation = np.mean(intersection, axis=0)
 
-            # ... and wrap it into a self-contained SlidingWindowFeature (SWF) instance
             resolution = current_vad.sliding_window
             resolution = SlidingWindow(start=required.start,
-                                      duration=resolution.duration,
-                                      step=resolution.step)
+                                    duration=resolution.duration,
+                                    step=resolution.step)
             output = SWF(aggregation, resolution)
 
-            # we update the internal state
             delayed_time = real_time - self.latency
             internal_state = (delayed_time, past_buffers)
 
-            # ... and return the whole thing for next call to know where we are
             return internal_state, output
 
     def update_display(self, vad_result: SWF):
-
         current_time = vad_result.extent.end
         current_vad = vad_result.data.squeeze()
 
-        # Update buffers for real-time display
+        # Update buffers
         time_points = np.linspace(current_time - len(current_vad)/self.sample_rate,
                                 current_time, len(current_vad))
 
@@ -181,41 +159,55 @@ class LiveVADVisualizer:
         # Update speech segments
         self.update_speech_segments()
 
+        # Clear previous output
         clear_output(wait=True)
-        display(self.status_text)
 
-        self.ax_wave.clear()
-        self.ax_wave.plot(self.time_buffer, self.waveform_buffer, 'b-', alpha=0.7, linewidth=0.5)
-        self.ax_wave.set_title(f"Live Audio Waveform (showing last {self.history_size}s)")
-        self.ax_wave.set_ylabel("Amplitude")
+        # Create new figure for each update (Colab workaround)
+        fig, (ax_original, ax_wave, ax_vad) = plt.subplots(3, 1, figsize=(14, 10))
 
-        # Highlight speech regions on waveform
+        # 1. Original waveform plot
+        if self.original_waveform is not None:
+            ax_original.plot(self.original_time, self.original_waveform, 'b-', alpha=0.5, linewidth=0.5)
+            for seg_start, seg_end in self.speech_segments:
+                ax_original.axvspan(seg_start, seg_end, color='green', alpha=0.3)
+            ax_original.axvline(current_time, color='red', linestyle='--', alpha=0.7)
+            ax_original.set_title(f"Original Audio (Time: {current_time:.2f}s)")
+            ax_original.set_ylabel("Amplitude")
+            ax_original.grid(True, alpha=0.2)
+
+        # 2. Live waveform plot
+        ax_wave.plot(self.time_buffer, self.waveform_buffer, 'b-', alpha=0.7, linewidth=0.5)
         for seg in self.speech_segments:
             if seg[1] >= self.time_buffer[0] and seg[0] <= self.time_buffer[-1]:
-                start = max(seg[0], self.time_buffer[0])
-                end = min(seg[1], self.time_buffer[-1])
-                self.ax_wave.axvspan(start, end, color='green', alpha=0.2)
+                ax_wave.axvspan(max(seg[0], self.time_buffer[0]),
+                              min(seg[1], self.time_buffer[-1]),
+                              color='green', alpha=0.2)
+        ax_wave.set_title(f"Live Audio (Last {self.history_size}s)")
+        ax_wave.set_ylabel("Amplitude")
+        ax_wave.grid(True, alpha=0.2)
 
-        # Plot VAD results
-        self.ax_vad.clear()
-        self.ax_vad.plot(self.time_buffer, self.vad_buffer, 'r-', alpha=0.7, linewidth=1)
-        self.ax_vad.fill_between(self.time_buffer, 0, self.vad_buffer, color='red', alpha=0.2)
-        self.ax_vad.set_title("Voice Activity Detection")
-        self.ax_vad.set_xlabel("Time (seconds)")
-        self.ax_vad.set_ylabel("Speech Probability")
-        self.ax_vad.set_ylim(-0.1, 1.1)
-
-        # Draw threshold line
-        self.ax_vad.axhline(0.5, color='gray', linestyle='--', alpha=0.5)
-
-        plt.show()
+        # 3. VAD plot
+        ax_vad.plot(self.time_buffer, self.vad_buffer, 'r-', alpha=0.7, linewidth=1)
+        ax_vad.fill_between(self.time_buffer, 0, self.vad_buffer,
+                         where=(self.vad_buffer > 0.5),
+                         color='red', alpha=0.2)
+        ax_vad.set_title("Voice Activity Detection")
+        ax_vad.set_xlabel("Time (seconds)")
+        ax_vad.set_ylabel("Probability")
+        ax_vad.set_ylim(-0.1, 1.1)
+        ax_vad.axhline(0.5, color='gray', linestyle='--', alpha=0.5)
+        ax_vad.grid(True, alpha=0.2)
 
         # Update status
-        current_speech = np.mean(self.vad_buffer[-int(self.sample_rate*0.2):]) > 0.5  # 200ms lookback
-        if current_speech:
-            self.status_text.value = f"<h3 style='color:green;'>Status: SPEECH DETECTED ({time.strftime('%H:%M:%S')})</h3>"
-        else:
-            self.status_text.value = f"<h3 style='color:red;'>Status: silence ({time.strftime('%H:%M:%S')})</h3>"
+        current_speech = np.mean(self.vad_buffer[-int(self.sample_rate*0.2):]) > 0.5
+        status_color = 'green' if current_speech else 'red'
+        status_text = "SPEECH DETECTED" if current_speech else "silence"
+        self.status_text.value = f"<h3 style='color:{status_color};'>Status: {status_text} ({time.strftime('%H:%M:%S')})</h3>"
+
+        # Display everything
+        display(fig)
+        display(self.status_text)
+        plt.close(fig)  # Prevent figure duplication
 
     def update_speech_segments(self):
         """Update the list of continuous speech segments"""
@@ -224,7 +216,6 @@ class LiveVADVisualizer:
         starts = np.where(changes == 1)[0]
         ends = np.where(changes == -1)[0]
 
-        # Handle edge cases
         if speech_mask[0]:
             starts = np.insert(starts, 0, 0)
         if speech_mask[-1]:
@@ -236,7 +227,6 @@ class LiveVADVisualizer:
             seg_end = self.time_buffer[end]
             new_segments.append((seg_start, seg_end))
 
-        # Merge with existing segments if they overlap
         if not self.speech_segments:
             self.speech_segments = new_segments
         else:
@@ -252,97 +242,50 @@ class LiveVADVisualizer:
                     current_start, current_end = seg
             merged.append((current_start, current_end))
 
-            self.speech_segments = merged[-10:]  # Keep last 10 segments for display
+            self.speech_segments = merged[-10:]
 
     def show_final_plot(self):
-        """Display the final complete plot with waveform and VAD results"""
-        from matplotlib.collections import PolyCollection
-        clear_output(wait=True)
+        """Display final results"""
+        fig, (ax_orig, ax_vad) = plt.subplots(2, 1, figsize=(14, 8))
 
-        fig, (ax_wave, ax_vad) = plt.subplots(2, 1, sharex=True, figsize=(14, 8))
-        fig.tight_layout(pad=3.0)
+        # 1. Original waveform with speech regions
+        ax_orig.plot(self.original_time, self.original_waveform, 'b-', alpha=0.7, linewidth=0.7)
+        for seg_start, seg_end in self.speech_segments:
+            ax_orig.axvspan(seg_start, seg_end, color='green', alpha=0.3)
+        ax_orig.set_title("Original Audio with Detected Speech Regions")
+        ax_orig.set_ylabel("Amplitude")
+        ax_orig.grid(True, alpha=0.2)
 
-        # Calculate speech segments
-        speech_mask = self.full_vad > 0.5
-        changes = np.diff(speech_mask.astype(int))
-        starts = np.where(changes == 1)[0]
-        ends = np.where(changes == -1)[0]
-
-        if speech_mask[0]:
-            starts = np.insert(starts, 0, 0)
-        if speech_mask[-1]:
-            ends = np.append(ends, len(speech_mask)-1)
-
-        # Convert to time values
-        speech_segments = []
-        for start, end in zip(starts, ends):
-            seg_start = self.full_time[start]
-            seg_end = self.full_time[end]
-            speech_segments.append((seg_start, seg_end))
-
-        # Calculate statistics
-        total_duration = len(self.full_waveform) / self.sample_rate
-        speech_duration = np.sum(self.full_vad > 0.5) / self.sample_rate
-        speech_percentage = (speech_duration / total_duration) * 100
-
-        ax_wave.plot(self.full_time, self.full_waveform, 'b-', alpha=0.7, linewidth=0.5)
-
-        verts = [
-            [(start, -1), (start, 1), (end, 1), (end, -1)]
-            for start, end in speech_segments
-        ]
-        if verts:
-            ax_wave.add_collection(
-                PolyCollection(verts, facecolors='green', alpha=0.3, edgecolors='none')
-            )
-
-        ax_wave.set_title(
-            f"Audio Waveform with Speech Regions\nSpeech: {speech_percentage:.1f}% | Segments: {len(speech_segments)}"
-        )
-        ax_wave.set_ylabel("Amplitude")
-        ax_wave.grid(True, alpha=0.3)
-        ax_wave.set_ylim(-1.1, 1.1)
-
+        # 2. VAD results
         ax_vad.plot(self.full_time, self.full_vad, 'r-', alpha=0.7, linewidth=1)
-        ax_vad.fill_between(self.full_time, 0, self.full_vad, color='red', alpha=0.2)
+        ax_vad.fill_between(self.full_time, 0, self.full_vad,
+                          where=(self.full_vad > 0.5),
+                          color='red', alpha=0.2)
         ax_vad.set_title("Voice Activity Detection Probability")
         ax_vad.set_xlabel("Time (seconds)")
         ax_vad.set_ylabel("Probability")
         ax_vad.set_ylim(-0.1, 1.1)
         ax_vad.axhline(0.5, color='gray', linestyle='--', alpha=0.5)
-        ax_vad.grid(True, alpha=0.3)
+        ax_vad.grid(True, alpha=0.2)
 
+        # Add statistics
+        total_duration = len(self.original_waveform) / self.original_sample_rate
+        speech_duration = sum(end-start for start,end in self.speech_segments)
+        speech_percentage = (speech_duration / total_duration) * 100
+        fig.suptitle(f"Total: {total_duration:.2f}s | Speech: {speech_duration:.2f}s ({speech_percentage:.1f}%) | Segments: {len(self.speech_segments)}",
+                    y=1.02)
 
+        plt.tight_layout()
         plt.show()
-
-        print("\n=== FINAL RESULTS ===")
-        print(f"Total audio duration: {total_duration:.2f}s")
-        print(f"Speech duration: {speech_duration:.2f}s ({speech_percentage:.1f}%)")
-        print(f"Number of speech segments: {len(speech_segments)}")
-        if len(speech_segments) > 0:
-            avg_length = np.mean([end-start for start,end in speech_segments])
-            print(f"Average speech segment length: {avg_length:.2f}s")
-        else:
-            print("No speech segments detected")
-
-    def plot_initial_waveform(self, waveform, sample_rate):
-        """Plot the original audio waveform before any processing"""
-        time_axis = np.arange(len(waveform)) / sample_rate
-        self.waveform = waveform
-
-
-        plt.figure(figsize=(14, 4))
-        plt.plot(time_axis, waveform, 'b-', alpha=0.7, linewidth=0.5)
-        plt.title("Original Audio Waveform")
-        plt.xlabel("Time (seconds)")
-        plt.ylabel("Amplitude")
-        plt.grid(True, alpha=0.3)
-        plt.show()
-
 
     def process_audio_file(self, file_path):
-        """Process an audio file in a streaming fashion"""
+        """Process an audio file with real-time visualization"""
         waveform, sample_rate = torchaudio.load(file_path)
+
+        # Store original waveform
+        self.original_waveform = waveform.squeeze().numpy()
+        self.original_sample_rate = sample_rate
+        self.original_time = np.arange(len(self.original_waveform)) / sample_rate
 
         # Convert to mono and resample if needed
         if waveform.shape[0] > 1:
@@ -353,8 +296,6 @@ class LiveVADVisualizer:
                 new_freq=self.sample_rate
             )
             waveform = resampler(waveform)
-
-
 
         # Process in chunks
         chunk_size = int(self.window_size * self.sample_rate)
@@ -377,17 +318,17 @@ class LiveVADVisualizer:
 
             # Feed to stream
             self.source.emit(swf_chunk)
-            time.sleep(self.hop_size)
+
+            # Add small delay to control update rate
+            time.sleep(self.hop_size * 0.9)
 
         self.status_text.value = "<h3 style='color:blue;'>Status: Processing complete!</h3>"
-
         self.show_final_plot()
-        self.plot_initial_waveform(waveform.squeeze().numpy(), self.sample_rate)
 
-
+# Main execution
 if __name__ == "__main__":
     print("Please upload an audio file:")
     uploaded = files.upload()
     audio_file = next(iter(uploaded.keys()))
-    vad_visualizer = LiveVADVisualizer(window_size=2.0, hop_size=0.2, latency=0.5, history_size=10)
+    vad_visualizer = LiveVADVisualizer(window_size=0.5, hop_size=0.05)
     vad_visualizer.process_audio_file(audio_file)
